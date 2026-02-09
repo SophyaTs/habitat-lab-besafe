@@ -16,7 +16,7 @@ from agent.peanut_agent import PEANUT_Agent
 from nav.patch_config import patch_task_config
 
 # HARDCODE FOR NOW
-os.environ["CHALLENGE_CONFIG_FILE"] = "/mnt/storage/University/ETH/Thesis/PEANUT/configs/challenge_objectnav2022.local.rgbd.yaml"
+os.environ["CHALLENGE_CONFIG_FILE"] = "path/to/PEANUT/configs/challenge_objectnav2022.local.rgbd.yaml"
 
 
 def main():
