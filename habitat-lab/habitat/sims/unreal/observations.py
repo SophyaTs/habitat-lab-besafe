@@ -87,9 +87,6 @@ class ObservationsSingleton(metaclass=Singleton):
             # use imdecode function
             if "Depth" in key:
                 image = cv2.imdecode(image, cv2.IMREAD_ANYDEPTH)
-                image = np.fliplr(
-                    image
-                )  # For some reason, depth is flipped along X axis
 
                 # print(f"depth has min={np.min(image)} and max={np.max(image)}")
 

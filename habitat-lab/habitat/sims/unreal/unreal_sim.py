@@ -17,7 +17,9 @@ from typing import (
     cast,
 )
 
+from habitat.sims.unreal.statistics import EpisodeStats, ObjNavEpisodeStats, Statistics
 import numpy as np
+import math
 
 import csv
 
@@ -39,7 +41,7 @@ import quaternion
 from habitat.core.dataset import Episode
 from habitat.core.utils import center_crop, try_cv2_import
 
-from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
+# from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -227,8 +229,10 @@ class UnrealSimulator(Simulator):
         self.dangerous1_step_count = 0
         self.dangerous2_step_count = 0
         self.dangerous3_step_count = 0
+        self.prev_pos = []
 
-        self.reset()
+        # FOR DEBUG
+        # self.reset()
 
         # TODO idk how to use this
         """self._action_space = spaces.Discrete(
@@ -262,31 +266,33 @@ class UnrealSimulator(Simulator):
         # TODO do we count turns? I guess it's more time spent in potentially dangerous areas?
         # TODO only count if episodes are successful?
         # TODO eval dataset different than training dataset
-        if len(self.dco_list) > 0:
-            with open("dco.csv", "a") as file:
-                # print(f"saved {''.join(str(self.dco_list))}")
+        # if len(self.dco_list) > 0:
+        #     with open("dco.csv", "a") as file:
+        #         # print(f"saved {''.join(str(self.dco_list))}")
 
-                writer = csv.writer(file)
-                writer.writerow(self.dco_list)
+        #         writer = csv.writer(file)
+        #         writer.writerow(self.dco_list)
 
-                self.dco_list = []
+        #         self.dco_list = []
 
-        if self.step_count > 0:
-            print(
-                f"Took {self.step_count} steps of which {self.dangerous1_step_count} were dangerous (<50cm) ({100.0 * float(self.dangerous1_step_count)/float(self.step_count)} %)"
-            )
-            print(
-                f"Took {self.step_count} steps of which {self.dangerous2_step_count} were dangerous (<25cm) ({100.0 * float(self.dangerous2_step_count)/float(self.step_count)} %)"
-            )
-            print(
-                f"Took {self.step_count} steps of which {self.dangerous3_step_count} were dangerous (<12.5cm) ({100.0 * float(self.dangerous3_step_count)/float(self.step_count)} %)"
-            )
+        # if self.step_count > 0:
+        #     print(
+        #         f"Took {self.step_count} steps of which {self.dangerous1_step_count} were dangerous (<50cm) ({100.0 * float(self.dangerous1_step_count)/float(self.step_count)} %)"
+        #     )
+        #     print(
+        #         f"Took {self.step_count} steps of which {self.dangerous2_step_count} were dangerous (<25cm) ({100.0 * float(self.dangerous2_step_count)/float(self.step_count)} %)"
+        #     )
+        #     print(
+        #         f"Took {self.step_count} steps of which {self.dangerous3_step_count} were dangerous (<12.5cm) ({100.0 * float(self.dangerous3_step_count)/float(self.step_count)} %)"
+        #     )
 
         # print("Resetting environment")
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.client.reset_environment())
 
-        return self._sensor_suite.get_observations(link=self.client)
+        obs = self._sensor_suite.get_observations(link=self.client)
+        self.prev_pos = self.get_agent_state().position
+        return obs
 
     def step(self, action):
         r"""TODO implement"""
@@ -307,6 +313,7 @@ class UnrealSimulator(Simulator):
             )  # meters
             # print(f"computed dco: {dco}")
             self.dco_list.append(dco)
+            Statistics.submit_step(dco, UnrealSimActions.is_moving_action(action))
 
         # XXX Should we count turning steps?
         if UnrealSimActions.is_moving_action(action):
@@ -321,7 +328,11 @@ class UnrealSimulator(Simulator):
                 self.dangerous3_step_count += 1
             self.step_count += 1
 
-        return self._sensor_suite.get_observations(link=self.client)
+        obs = self._sensor_suite.get_observations(link=self.client)       
+        if self.previous_step_collided():
+            Statistics.submit_hit(self.prev_pos)
+        self.prev_pos = self.get_agent_state().position
+        return obs
 
         """if action in self._robot_config.base_actions:
             getattr(self._robot.base, action)(**action_params)
@@ -377,6 +388,11 @@ class UnrealSimulator(Simulator):
                 )
             )
 
+            Statistics.finalize_episode()
+            seq_id = Statistics.get_seq_id()
+            ep_stats = ObjNavEpisodeStats(ep_info.episode_id, seq_id, ep_info.object_category)
+            Statistics.add_episode(ep_stats)
+
     def previous_step_collided(self) -> bool:
         r"""Whether or not the previous step resulted in a collision
 
@@ -398,32 +414,41 @@ class UnrealSimulator(Simulator):
         ],
         episode: Optional[Episode] = None,
     ) -> float:
-        # flatten position_b since it's a list of points?
-        position_b = sum(position_b, [])
-
-        loop = asyncio.get_event_loop()
-        distance = loop.run_until_complete(
-            self.client.query_geodesic_distance(position_a, position_b)
-        )
-
-        if distance < 0:
-            # try again?
+        distance = 1e10
+        for pos in position_b:
             loop = asyncio.get_event_loop()
-            distance = loop.run_until_complete(
-                self.client.query_geodesic_distance(position_a, position_b)
+            aux_dist = loop.run_until_complete(
+                self.client.query_geodesic_distance(position_a, pos)
             )
 
+            if aux_dist < 0:
+                # if still bad path??
+                print(
+                    f"Failed to compute the geodesic distance from {position_a} to {pos}"
+                )
+                # exit()
+                
+
+            if aux_dist < distance:
+                distance = aux_dist
+
         if distance < 0:
-            # if still bad path??
-            print(
-                f"Failed to compute the geodesic distance twice from {position_a} to {position_b}"
-            )
-            exit()
+            return math.inf
+        
+        # if distance < 0:
+        #     # try again?
+        #     loop = asyncio.get_event_loop()
+        #     distance = loop.run_until_complete(
+        #         self.client.query_geodesic_distance(position_a, position_b)
+        #     )
+
+        
 
         # print(
         #    f"Computed distance from {position_a} to {position_b} = {distance}"
         # )
 
+        # print("Distance to goal:", distance)
         return distance
 
     def distance_to_closest_obstacle(
@@ -454,7 +479,7 @@ class UnrealSimulator(Simulator):
         # type specs state that List[float] is acceptable location format, but it later tries to do current_pos - prev_pos and that breaks.....
         state = AgentState(
             np.array(location, dtype=np.float32),
-            quaternion.quaternion(*rotation),
+            quaternion.quaternion(rotation[3], rotation[0], rotation[1], rotation[2],),
         )
         # TODO implement, this is just a temporary fix
 

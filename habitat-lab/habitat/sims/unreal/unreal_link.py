@@ -3,6 +3,7 @@ import socket
 import struct
 import json
 import base64
+import copy
 
 from habitat.sims.unreal.observations import Observations
 
@@ -66,7 +67,7 @@ class UnrealLink:
         # TODO error check? make new json field to detect errors or stop?
         action_name = UnrealSimActions.get_unreal_action(action)
 
-        print(f"Executing action {action_name}")
+        # print(f"Executing action {action_name}")
 
         observation = await self.__send_packet(f"action {action_name}")
 
@@ -98,6 +99,8 @@ class UnrealLink:
         # TODO error check? make new json field to detect errors or stop?
         print(f"Beginning the simulation")
 
+        #TODO change rotation
+        # rotation = convert_to_unreal_rotation(start_rotation)
         result = await self.__send_packet(
             f"begin_sim {' '.join(map(str, start_location))} {' '.join(map(str, start_rotation))}"
         )
